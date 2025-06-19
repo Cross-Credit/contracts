@@ -2,14 +2,14 @@
 pragma solidity ^0.8.13;
 
 import "./interfaces/IRouterClient.sol";
-import "./lib/Client.sol";
+import "./libraries/Client.sol";
 
 import "openzeppelin/contracts/access/Ownable.sol";
 import "openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "./utils/Error.sol";
-import "./lib/CrossCreditLibrary.sol";
+import "./libraries/CrossCreditLibrary.sol";
 import "./interfaces/ICrossCredit.sol";
 import "./interfaces/AggregatorV3Interface.sol";
 import {CCIPReceiver} from "./applications/CCIPReceiver.sol";
