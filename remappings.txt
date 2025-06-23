@@ -1,1 +1,3 @@
 openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+@chainlink/local/src/=lib/chainlink-local/src/
+@chainlink/local/lib/=lib/chainlink-local/lib/

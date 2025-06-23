@@ -11,6 +11,7 @@ library CrossCreditLibrary {
         address caller;
         address asset;
         uint256 amount;
+        address liquidator;
     }
 
     struct BorrowPosition {

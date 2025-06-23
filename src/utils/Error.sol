@@ -20,4 +20,7 @@ library Error {
     error CollateralExhausted();
     error UserNotLiquidateable();
     error InsufficientRepayAmount();
+    error FallbackUnsupported();
+    error InvalidPositionType();
+    error InvalidAssetDecimals();
 }

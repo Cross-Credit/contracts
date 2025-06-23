@@ -1,40 +1,44 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import "./interfaces/IRouterClient.sol";
-import "./libraries/Client.sol";
+import {console} from "forge-std/console.sol";
+
+import {IRouterClient} from "@chainlink/local/lib/chainlink-ccip/chains/evm/contracts/interfaces/IRouterClient.sol";
+import {Client} from "@chainlink/local/lib/chainlink-ccip/chains/evm/contracts/libraries/Client.sol";
+import {CCIPReceiver} from "@chainlink/local/lib/chainlink-ccip/chains/evm/contracts/applications/CCIPReceiver.sol";
 
 import "openzeppelin/contracts/access/Ownable.sol";
 import "openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import "openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./utils/Error.sol";
 import "./libraries/CrossCreditLibrary.sol";
 import "./interfaces/ICrossCredit.sol";
 import "./interfaces/AggregatorV3Interface.sol";
-import {CCIPReceiver} from "./applications/CCIPReceiver.sol";
 
-contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
+contract CrossCredit is Ownable, ReentrancyGuard, CCIPReceiver, ICrossCredit {
     using SafeERC20 for IERC20;
     using EnumerableSet for EnumerableSet.AddressSet;
 
     EnumerableSet.AddressSet private s_whitelistedAssets;
     mapping(address => uint8) private s_assetDecimals;
-    mapping(address => mapping(address => CrossCreditLibrary.LendPosition)) private s_userLendPosition;
-    mapping(address => mapping(address => CrossCreditLibrary.BorrowPosition)) private s_userBorrowPosition;
+    mapping(address => mapping(address => CrossCreditLibrary.LendPosition)) internal s_userLendPosition;
+    mapping(address => mapping(address => CrossCreditLibrary.BorrowPosition)) internal s_userBorrowPosition;
 
-    mapping(address => address) private s_assetToAssetOnConnectedChain;
+    mapping(address => address) internal s_assetToAssetOnConnectedChain;
     mapping(address => uint8) private s_assetDecimalsOnConnectedChain;
 
     mapping(address => AggregatorV3Interface) private s_assetFeed;
 
+    bool public s_isConnectedChainSet;
     address private s_receiverOnConnectedChain;
     uint64 public s_connectedChainID;
     uint64 public immutable i_sourceChainID;
     address private immutable i_nativeAssetAddress;
 
-    mapping(address => mapping(address => CrossCreditLibrary.LendPosition)) private s_userLendPositionOnConnectedChain;
-    mapping(address => mapping(address => CrossCreditLibrary.BorrowPosition)) private s_userBorrowPositionOnConnectedChain;
+    mapping(address => mapping(address => CrossCreditLibrary.LendPosition)) internal s_userLendPositionOnConnectedChain;
+    mapping(address => mapping(address => CrossCreditLibrary.BorrowPosition)) internal s_userBorrowPositionOnConnectedChain;
 
     IRouterClient private s_router;
 //    LinkTokenInterface private s_linkToken;
@@ -42,8 +46,13 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
     uint8 private constant LEND_POSITION = 1;
     uint8 private constant BORROW_POSITION = 2;
     uint8 private constant LIQUIDATE_POSITION = 3;
-    uint8 private constant LTV = 75;
-    uint8 private constant LIQ = 80;
+    uint8 public constant LTV = 75;
+    uint8 public constant LIQ = 80;
+
+    bytes32 latestMessageId;
+    uint64 latestSourceChainSelector;
+    address latestSender;
+    string latestMessage;
 
     modifier onlyWhitelistedAsset(address _asset) {
         if (!s_whitelistedAssets.contains(_asset)) revert Error.NotWhitelistedAsset();
@@ -60,7 +69,7 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
         _;
     }
 
-    constructor(address _adminAddress, address _nativeAsset, address router) Ownable(_adminAddress) CCIPReceiver(router) {
+    constructor(address _adminAddress, address _nativeAsset, address router) Ownable(_adminAddress) CCIPReceiver(router) validAddress(_adminAddress) validAddress(_nativeAsset) {
         i_nativeAssetAddress = _nativeAsset;
         s_router = IRouterClient(router);
 
@@ -87,17 +96,20 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
 
     function setConnectedChainID(uint64 _chainID) public onlyOwner {
         s_connectedChainID = _chainID;
+        s_isConnectedChainSet = true;
     }
 
-    function setAssetToAssetOnConnectedChain(address _asset, address _connectedChainAsset) public onlyOwner validAddress(_asset) validAddress(_connectedChainAsset) {
+    function setAssetToAssetOnConnectedChain(address _asset, address _connectedChainAsset, uint8 _assetDecimalsOnConnected) public onlyOwner validAddress(_asset) validAddress(_connectedChainAsset) {
+        if (_assetDecimalsOnConnected == 0) revert Error.InvalidAssetDecimals();
         s_assetToAssetOnConnectedChain[_asset] = _connectedChainAsset;
+        s_assetDecimalsOnConnectedChain[_asset] = _assetDecimalsOnConnected;
     }
 
     function setPriceFeed(address _asset, address _feed) public onlyOwner validAddress(_feed) onlyWhitelistedAsset(_asset) {
         s_assetFeed[_asset] = AggregatorV3Interface(_feed);
     }
 
-    function lend(uint256 _amount, address _asset) public payable onlyWhitelistedAsset(_asset) validAddress(_asset) onlyConnectedAsset(_asset) {
+    function lend(uint256 _amount, address _asset) public payable nonReentrant onlyWhitelistedAsset(_asset) validAddress(_asset) onlyConnectedAsset(_asset) {
         if (_amount == 0) revert Error.NoZeroAmount();
         if (_asset == i_nativeAssetAddress) {
             if (msg.value != _amount) revert Error.InvalidAmount();
@@ -109,21 +121,23 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
         lendPosition.amount += _amount;
 
         CrossCreditLibrary.PositionOnConnected memory c_lendPosition = CrossCreditLibrary.PositionOnConnected({
-            sourceChainID: i_sourceChainID, caller: msg.sender, asset: s_assetToAssetOnConnectedChain[_asset], amount: lendPosition.amount
+            sourceChainID: i_sourceChainID, caller: msg.sender, asset: s_assetToAssetOnConnectedChain[_asset], amount: lendPosition.amount, liquidator: address(0)
         });
 
         bytes memory ccipData = abi.encode(c_lendPosition, LEND_POSITION);
         _ccipSend(ccipData);
     }
 
-    function borrow(uint256 _amount, address _asset) public onlyWhitelistedAsset(_asset) validAddress(_asset) {
+    function borrow(uint256 _amount, address _asset) public nonReentrant onlyWhitelistedAsset(_asset) validAddress(_asset) {
         if (_amount == 0) revert Error.NoZeroAmount();
 
         uint256 userTotalLendUSDValue = getTotalUSDValueOfUserByType(msg.sender, 1);
         uint256 userTotalBorrowUSDValue = getTotalUSDValueOfUserByType(msg.sender, 2);
 
+        uint256 assetDecimals = s_assetDecimals[_asset];
+
         (int256 price, uint8 priceFeedDecimals) = _getAssetPriceData(_asset);
-        uint256 currentBorrowAmountUSD = (_amount * uint256(price)) / (10 ** priceFeedDecimals);
+        uint256 currentBorrowAmountUSD = (_amount * uint256(price)) / (10 ** assetDecimals);
 
         if (currentBorrowAmountUSD + userTotalBorrowUSDValue > ((LTV * userTotalLendUSDValue) / 100)) revert Error.AmountSurpassesLTV();
 
@@ -131,7 +145,7 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
         borrowPosition.amount += _amount;
 
         CrossCreditLibrary.PositionOnConnected memory c_borrowPosition = CrossCreditLibrary.PositionOnConnected({
-            amount: borrowPosition.amount, caller: msg.sender, asset: s_assetToAssetOnConnectedChain[_asset], sourceChainID: i_sourceChainID
+            amount: borrowPosition.amount, caller: msg.sender, asset: s_assetToAssetOnConnectedChain[_asset], sourceChainID: i_sourceChainID, liquidator: address(0)
         });
 
         bytes memory ccipData = abi.encode(c_borrowPosition, BORROW_POSITION);
@@ -146,7 +160,7 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
         }
     }
 
-    function repay(uint256 _amount, address _asset) public payable onlyWhitelistedAsset(_asset) validAddress(_asset) {
+    function repay(uint256 _amount, address _asset) public payable nonReentrant onlyWhitelistedAsset(_asset) validAddress(_asset) {
         if (_amount == 0) revert Error.NoZeroAmount();
 
         uint256 assetAmountBorrowed = s_userBorrowPosition[msg.sender][_asset].amount;
@@ -163,7 +177,7 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
         borrowPosition.amount -= _amount;
 
         CrossCreditLibrary.PositionOnConnected memory c_borrowPosition = CrossCreditLibrary.PositionOnConnected({
-            amount: borrowPosition.amount, caller: msg.sender, asset: s_assetToAssetOnConnectedChain[_asset], sourceChainID: i_sourceChainID
+            amount: borrowPosition.amount, caller: msg.sender, asset: s_assetToAssetOnConnectedChain[_asset], sourceChainID: i_sourceChainID, liquidator: address(0)
         });
 
         bytes memory ccipData = abi.encode(c_borrowPosition, BORROW_POSITION);
@@ -171,7 +185,7 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
 
     }
 
-    function unlend(uint256 _amount, address _asset) public onlyWhitelistedAsset(_asset) validAddress(_asset) {
+    function unlend(uint256 _amount, address _asset) public nonReentrant onlyWhitelistedAsset(_asset) validAddress(_asset) {
         if (_amount == 0) revert Error.NoZeroAmount();
 
         uint256 userTotalLendUSDValue = getTotalUSDValueOfUserByType(msg.sender, 1);
@@ -188,7 +202,7 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
         lendPosition.amount -= _amount;
 
         CrossCreditLibrary.PositionOnConnected memory c_lendPosition = CrossCreditLibrary.PositionOnConnected({
-            amount: lendPosition.amount, asset: s_assetToAssetOnConnectedChain[_asset], caller: msg.sender, sourceChainID: i_sourceChainID
+            amount: lendPosition.amount, asset: s_assetToAssetOnConnectedChain[_asset], caller: msg.sender, sourceChainID: i_sourceChainID, liquidator: address(0)
         });
 
         bytes memory ccipData = abi.encode(c_lendPosition, LEND_POSITION);
@@ -202,70 +216,148 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
         }
     }
 
-    function liquidate(uint256 _amount, address _asset, address _borrower) public payable onlyWhitelistedAsset(_asset) validAddress(_asset) validAddress(_borrower){
+    function liquidate(uint256 _amount, address _asset, address _borrower)
+    public
+    payable nonReentrant
+    onlyWhitelistedAsset(_asset)
+    validAddress(_asset)
+    validAddress(_borrower)
+    {
         if (_amount == 0) revert Error.NoZeroAmount();
 
-        uint256 userTotalLendUSDValue = getTotalUSDValueOfUserByType(msg.sender, 1);
-        uint256 userTotalBorrowUSDValue = getTotalUSDValueOfUserByType(msg.sender, 2);
+        uint256 userTotalLendUSDValue = getTotalUSDValueOfUserByType(_borrower, 1);
+        uint256 userTotalBorrowUSDValue = getTotalUSDValueOfUserByType(_borrower, 2);
 
         (int256 price, uint8 priceFeedDecimals) = _getAssetPriceData(_asset);
         uint256 currentRepayAmountUSD = (_amount * uint256(price)) / (10 ** priceFeedDecimals);
 
-        if(userTotalBorrowUSDValue < ((LIQ * userTotalLendUSDValue) / 100)) revert Error.UserNotLiquidateable();
+        if (userTotalBorrowUSDValue < ((LIQ * userTotalLendUSDValue) / 100)) revert Error.UserNotLiquidateable();
+        if (currentRepayAmountUSD < userTotalBorrowUSDValue) revert Error.InsufficientRepayAmount();
 
+        // Liquidator pays the debt asset
         if (_asset == i_nativeAssetAddress) {
-            if(currentRepayAmountUSD < userTotalBorrowUSDValue) revert Error.InsufficientRepayAmount();
+            if (msg.value != _amount) revert Error.InvalidAmount();
+        } else {
+            IERC20(_asset).safeTransferFrom(msg.sender, address(this), _amount);
         }
 
+        uint256 refundAmount;
+        refundAmount = currentRepayAmountUSD > userTotalBorrowUSDValue ? currentRepayAmountUSD - userTotalBorrowUSDValue : 0;
+
+        address[] memory assets = s_whitelistedAssets.values();
+
+        // Iterate through all assets and process liquidation for each using the helper
+        for (uint256 i = 0; i < assets.length; i++) {
+            _processAssetDuringLiquidation(_borrower, assets[i], msg.sender);
+        }
+
+        // Handle any refund due to the liquidator
+        if (refundAmount > 0) {
+            // Calculate the token amount to refund based on the USD overpayment
+            uint256 tokenAmountToRefund = _amount * refundAmount / currentRepayAmountUSD;
+
+            if (_asset != i_nativeAssetAddress) {
+                IERC20(_asset).safeTransfer(msg.sender, tokenAmountToRefund);
+            } else {
+                (bool success,) = payable(msg.sender).call{value: tokenAmountToRefund}("");
+                if (!success) revert Error.TransferFailed();
+            }
+        }
+    }
+
+    function _processAssetDuringLiquidation(
+        address _borrower,
+        address _currentAsset,
+        address _liquidator
+    ) internal {
+        uint256 userLendAmountOnSource = s_userLendPosition[_borrower][_currentAsset].amount;
+        uint256 userLendAmountOnConnected = s_userLendPositionOnConnectedChain[_borrower][_currentAsset].amount;
+
+        s_userLendPosition[_borrower][_currentAsset].amount = 0;
+        s_userBorrowPosition[_borrower][_currentAsset].amount = 0;
+
+        s_userLendPositionOnConnectedChain[_borrower][_currentAsset].amount = 0;
+        s_userBorrowPositionOnConnectedChain[_borrower][_currentAsset].amount = 0;
+
+
+        CrossCreditLibrary.PositionOnConnected memory c_liquidatePosition = CrossCreditLibrary.PositionOnConnected({
+            amount: userLendAmountOnConnected,
+            asset: s_assetToAssetOnConnectedChain[_currentAsset],
+            caller: _borrower,
+            sourceChainID: i_sourceChainID,
+            liquidator: _liquidator
+        });
+
+        bytes memory ccipData = abi.encode(c_liquidatePosition, LIQUIDATE_POSITION);
+        _ccipSend(ccipData);
+
+        // 5. Transfer collateral to the liquidator on the source chain
+        if (_currentAsset != i_nativeAssetAddress) {
+            IERC20(_currentAsset).safeTransfer(_liquidator, userLendAmountOnSource);
+        } else {
+            (bool success,) = payable(_liquidator).call{value: userLendAmountOnSource}("");
+            if (!success) revert Error.TransferFailed();
+        }
     }
 
     function getTotalUSDValueOfUserByType(address _user, uint8 _positionType) public view returns (uint256) {
         address[] memory assets = s_whitelistedAssets.values();
 
-        uint256 totalUSDVal = 0;
+        uint256 totalUSDValScaled = 0; // Scaled by priceFeed decimals
 
         for (uint i = 0; i < assets.length; i++) {
             address _asset = assets[i];
-            uint256 userAmountOnSource;
-            uint256 userAmountOnConnected;
+            uint256 userAmountOnSourceRaw;
+            uint256 userAmountOnConnectedRaw;
 
             if (_positionType == 1) { // Lend
-                userAmountOnSource = s_userLendPosition[_user][_asset].amount;
-                userAmountOnConnected = s_userLendPositionOnConnectedChain[_user][_asset].amount;
+                userAmountOnSourceRaw = s_userLendPosition[_user][_asset].amount;
+                userAmountOnConnectedRaw = s_userLendPositionOnConnectedChain[_user][_asset].amount;
             } else if (_positionType == 2) { // Borrow
-                userAmountOnSource = s_userBorrowPosition[_user][_asset].amount;
-                userAmountOnConnected = s_userBorrowPositionOnConnectedChain[_user][_asset].amount;
+                userAmountOnSourceRaw = s_userBorrowPosition[_user][_asset].amount;
+                userAmountOnConnectedRaw = s_userBorrowPositionOnConnectedChain[_user][_asset].amount;
             } else {
                 // Handle invalid position type, e.g., revert or skip
                 continue;
             }
 
-            if (userAmountOnConnected + userAmountOnSource == 0) continue;
-
-            if (address(s_assetFeed[_asset]) == address(0)) continue;
+            if (userAmountOnConnectedRaw == 0 && userAmountOnSourceRaw == 0) continue;
+            if (address(s_assetFeed[_asset]) == address(0)) continue; // Ensure price feed exists
 
             (int256 price, uint8 priceFeedDecimals) = _getAssetPriceData(_asset);
+            uint256 localAssetDecimals = s_assetDecimals[_asset];
 
-            uint256 usdAmountOnSource;
-            uint256 usdAmountOnConnected;
+            uint256 usdAmountOnSourceScaled = 0;
+            uint256 usdAmountOnConnectedScaled = 0;
 
-            if (userAmountOnSource > 0) {
-                usdAmountOnSource = (userAmountOnSource * uint256(price)) / (10 ** priceFeedDecimals);
+            // Calculate USD value for amount on SOURCE chain (this chain)
+            if (userAmountOnSourceRaw > 0) {
+                // Correct: Raw amount / (10^asset_decimals) * price
+                usdAmountOnSourceScaled = (userAmountOnSourceRaw * uint256(price)) / (10 ** localAssetDecimals);
             }
 
-            if (userAmountOnConnected > 0) {
-                usdAmountOnConnected = s_assetDecimalsOnConnectedChain[_asset] != s_assetDecimals[_asset] ?
-                    (s_assetDecimalsOnConnectedChain[_asset] > s_assetDecimals[_asset] ?
-                        (userAmountOnConnected / (10 ** (s_assetDecimalsOnConnectedChain[_asset] - s_assetDecimals[_asset])) * uint256(price)) / (10 ** priceFeedDecimals) :
-                        (userAmountOnConnected * (10 ** (s_assetDecimals[_asset] - s_assetDecimalsOnConnectedChain[_asset])) * uint256(price)) / (10 ** priceFeedDecimals)
-                    ) :
-                    (userAmountOnConnected * uint256(price)) / (10 ** priceFeedDecimals);
+            // Calculate USD value for amount on CONNECTED chain
+            if (userAmountOnConnectedRaw > 0) {
+                uint256 connectedAssetDecimals = s_assetDecimalsOnConnectedChain[_asset]; // Decimals of the asset on the CONNECTED chain
+
+                // Normalize userAmountOnConnectedRaw to match localAssetDecimals before pricing with 'price'
+                uint256 userAmountOnConnectedNormalized;
+                if (connectedAssetDecimals > localAssetDecimals) {
+                    userAmountOnConnectedNormalized = userAmountOnConnectedRaw / (10 ** (connectedAssetDecimals - localAssetDecimals));
+                } else if (localAssetDecimals > connectedAssetDecimals) {
+                    userAmountOnConnectedNormalized = userAmountOnConnectedRaw * (10 ** (localAssetDecimals - connectedAssetDecimals));
+                } else { // Decimals are the same
+                    userAmountOnConnectedNormalized = userAmountOnConnectedRaw;
+                }
+
+                // Correct: Normalized raw amount / (10^local_asset_decimals) * price
+                usdAmountOnConnectedScaled = (userAmountOnConnectedNormalized * uint256(price)) / (10 ** localAssetDecimals);
             }
 
-            totalUSDVal += (usdAmountOnSource + usdAmountOnConnected);
+            totalUSDValScaled += (usdAmountOnSourceScaled + usdAmountOnConnectedScaled);
         }
 
-        return totalUSDVal;
+        return totalUSDValScaled;
     }
 
     function isAssetWhitelisted(address _asset) public view returns (bool) {
@@ -297,16 +389,92 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
         }
     }
 
+    function getUserPositionForAssetByTypeOnSource(address _asset, address _user, uint8 _positionType) public
+    onlyWhitelistedAsset(_asset)
+    validAddress(_asset)
+    validAddress(_user)
+    view returns (uint256) {
+        if (_positionType == LEND_POSITION) {
+            return s_userLendPosition[_user][_asset].amount;
+        } else if (_positionType == BORROW_POSITION) {
+            return s_userBorrowPosition[_user][_asset].amount;
+
+        } else {
+            revert Error.InvalidPositionType();
+        }
+
+    }
+
+    function getUserPositionForAssetByTypeOnDest(address _asset, address _user, uint8 _positionType) public
+    onlyWhitelistedAsset(_asset)
+    validAddress(_asset)
+    validAddress(_user)
+    view returns (uint256) {
+        if (_positionType == LEND_POSITION) {
+            return s_userLendPositionOnConnectedChain[_user][s_assetToAssetOnConnectedChain[_asset]].amount;
+        } else if (_positionType == BORROW_POSITION) {
+            return s_userBorrowPositionOnConnectedChain[_user][s_assetToAssetOnConnectedChain[_asset]].amount;
+        } else {
+            revert Error.InvalidPositionType();
+        }
+    }
+
+    function getAssetDecimalsOnSource(address _asset) public onlyWhitelistedAsset(_asset) validAddress(_asset) view returns (uint8) {
+        return s_assetDecimals[_asset];
+    }
+
+    function getAssetDecimalsOnDest(address _asset) public onlyWhitelistedAsset(_asset) validAddress(_asset) view returns (uint8) {
+        return s_assetDecimalsOnConnectedChain[_asset];
+    }
+
+    function getUserPositionForAssetByType(address _asset, address _user, uint8 _positionType) validAddress(_asset) validAddress(_user) public view returns (uint) {
+        if (_positionType == 1) {
+            return s_userLendPosition[_user][_asset].amount;
+        } else if (_positionType == 2) {
+            return s_userBorrowPosition[_user][_asset].amount;
+
+        } else {
+            revert Error.InvalidPositionType();
+        }
+    }
+
     function _ccipReceive(
         Client.Any2EVMMessage memory any2EvmMessage
     ) internal override {
 
         (CrossCreditLibrary.PositionOnConnected memory position, uint8 positionType) = abi.decode(any2EvmMessage.data, (CrossCreditLibrary.PositionOnConnected, uint8));
+
+        if (!s_whitelistedAssets.contains(position.asset)) revert Error.NotWhitelistedAsset();
+
+        console.log("Decoded position.sourceChainID: ", position.sourceChainID);
+        console.log("Decoded position.caller: ", position.caller);
+        console.log("Decoded position.asset: ", position.asset);
+        console.log("Decoded position.amount: ", position.amount);
+        console.log("Decoded position.liquidator: ", position.liquidator);
+        console.log("Decoded positionType: ", positionType);
+
         if (positionType == LEND_POSITION) {
             s_userLendPositionOnConnectedChain[position.caller][position.asset].amount = position.amount;
         } else if (positionType == BORROW_POSITION) {
             s_userBorrowPositionOnConnectedChain[position.caller][position.asset].amount = position.amount;
+        } else if (positionType == LIQUIDATE_POSITION) {
+            s_userLendPosition[position.caller][position.asset].amount = 0;
+            s_userBorrowPosition[position.caller][position.asset].amount = 0;
+            s_userBorrowPositionOnConnectedChain[position.caller][position.asset].amount = 0;
+            s_userLendPositionOnConnectedChain[position.caller][position.asset].amount = 0;
+
+            if (position.asset != i_nativeAssetAddress) {
+                IERC20(position.asset).safeTransfer(position.liquidator, position.amount);
+            } else {
+                (bool success,) = payable(position.liquidator).call{value: position.amount}("");
+                if (!success) revert Error.TransferFailed();
+            }
         }
+
+        latestMessageId = any2EvmMessage.messageId;
+        latestSourceChainSelector = any2EvmMessage.sourceChainSelector;
+        latestSender = position.caller;
+        latestMessage = "NEW MESSAGE";
 
         emit MessageReceived(
             any2EvmMessage.messageId,
@@ -316,9 +484,22 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
         );
     }
 
+    function getLatestMessageDetails()
+    public
+    view
+    returns (bytes32, uint64, address, string memory)
+    {
+        return (
+            latestMessageId,
+            latestSourceChainSelector,
+            latestSender,
+            latestMessage
+        );
+    }
+
     function _ccipSend(bytes memory _data) internal returns (bytes32 messageId){
         if (s_receiverOnConnectedChain == address(0)) revert Error.ReceiverAddressNotSet();
-        if (s_connectedChainID == 0) revert Error.ConnectedChainNotSet();
+        if (!s_isConnectedChainSet) revert Error.ConnectedChainNotSet();
         Client.EVM2AnyMessage memory ccMessage = Client.EVM2AnyMessage({
             receiver: abi.encode(s_receiverOnConnectedChain),
             data: _data,
@@ -350,4 +531,8 @@ contract CrossCredit is Ownable, CCIPReceiver, ICrossCredit {
             fees
         );
     }
+
+    receive() external payable {}
+
+    fallback() external payable {revert Error.FallbackUnsupported();}
 }
