@@ -192,7 +192,10 @@ contract CrossCredit is Ownable, ReentrancyGuard, CCIPReceiver, ICrossCredit {
         uint256 userTotalBorrowUSDValue = getTotalUSDValueOfUserByType(msg.sender, 2);
 
         (int256 price, uint8 priceFeedDecimals) = _getAssetPriceData(_asset);
-        uint256 currentUnlendAmountUSD = (_amount * uint256(price)) / (10 ** priceFeedDecimals);
+
+        uint8 localAssetDecimals = s_assetDecimals[_asset];
+
+        uint256 currentUnlendAmountUSD = (_amount * uint256(price)) / (10 ** localAssetDecimals);
 
         if (userTotalLendUSDValue < currentUnlendAmountUSD) revert Error.InsufficientCollateralRemaining();
 

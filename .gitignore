@@ -19,3 +19,4 @@ docs/
 cache
 lib
 lib/chainlink-local
+!out/CrossCredit.sol

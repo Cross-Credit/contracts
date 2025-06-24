@@ -8,7 +8,7 @@ contract CrossCreditBorrow is Base {
     function test_lendOnSourceAndBorrowOnDest() public {
         _setOraclePrices(1);
 
-        uint256 amountToLend = 1e6; // 1 USDC
+        uint256 amountToLend = 1e6; // ~1 USDC
         address assetToLend = address(sourceUSDC);
 
         // --- SOURCE CHAIN ACTIONS (Lend) ---
@@ -52,7 +52,7 @@ contract CrossCreditBorrow is Base {
 
         // Calculate max borrowable amount and the specific amount to borrow
         (,int usdPriceETH_dest, , ,) = priceFeedOnDestETH.latestRoundData();
-        uint256 LTV = crossCreditOnDest.LTV(); // Assuming LTV is 80 (0.8)
+        uint256 LTV = crossCreditOnDest.LTV();
         uint256 maxBorrowableUSD = (LTV * userTotalLendValue) / 100;
         uint256 targetBorrowUSD = ((LTV - 10) * userTotalLendValue) / 100; // Borrow 10% less than max for safety
 
@@ -99,4 +99,62 @@ contract CrossCreditBorrow is Base {
         assertEq(userTotalBorrowValueOnDest, userTotalBorrowValueOnSource, "Final Borrow USD value mismatch between chains");
     }
 
+    function test_lendOnSourceBorrowAndRepayOnDest() public {
+        _setOraclePrices(1);
+
+        uint256 amountToLend = 1e6; // ~1 USDC
+        address assetToLend = address(sourceUSDC);
+
+        vm.selectFork(sourceFork);
+
+        vm.startPrank(firstUser);
+        sourceUSDC.approve(address(crossCreditOnSource), amountToLend);
+        crossCreditOnSource.lend(amountToLend, assetToLend);
+        vm.stopPrank();
+
+        ccipLocalSimulatorFork.switchChainAndRouteMessage(destinationFork);
+
+        vm.selectFork(destinationFork);
+        uint userTotalLendValue = crossCreditOnDest.getTotalUSDValueOfUserByType(firstUser, 1);
+        (,int usdPriceETH_dest, , ,) = priceFeedOnDestETH.latestRoundData();
+        uint256 LTV = crossCreditOnDest.LTV();
+        uint256 maxBorrowableUSD = (LTV * userTotalLendValue) / 100;
+        uint256 targetBorrowUSD = ((LTV - 10) * userTotalLendValue) / 100; // Borrow 10% less than max for safety
+
+        uint256 nativeAssetDecimals = crossCreditOnDest.getAssetDecimalsOnSource(NATIVE_ASSET);
+        uint256 amountToBorrowRaw = (targetBorrowUSD * (10 ** nativeAssetDecimals)) / uint256(usdPriceETH_dest);
+
+        vm.startPrank(firstUser);
+        // BORROW
+        uint userBalOnDestBefore = firstUser.balance;
+        crossCreditOnDest.borrow(amountToBorrowRaw, NATIVE_ASSET);
+        uint userBalOnDestAfter = firstUser.balance;
+        vm.stopPrank();
+
+        ccipLocalSimulatorFork.switchChainAndRouteMessage(sourceFork);
+
+        vm.selectFork(destinationFork);
+        // REPAY
+        vm.startPrank(firstUser);
+        uint userTotalBorrowValue = crossCreditOnDest.getTotalUSDValueOfUserByType(firstUser, 2);
+        bool usdValCalc = userTotalBorrowValue < targetBorrowUSD ? targetBorrowUSD - userTotalBorrowValue < 10 : userTotalBorrowValue - targetBorrowUSD < 10;
+        assertEq(usdValCalc, true, "Borrowed USD value not within tolerance of target");
+
+        _setOraclePrices(1); // Price change
+        (,usdPriceETH_dest, , ,) = priceFeedOnDestETH.latestRoundData();
+        uint amountToRepay = (userTotalBorrowValue * (10 ** nativeAssetDecimals)) / uint256(usdPriceETH_dest);
+        vm.deal(firstUser, amountToRepay);
+        crossCreditOnDest.repay{value: amountToRepay}(amountToRepay, NATIVE_ASSET);
+        userTotalBorrowValue = crossCreditOnDest.getTotalUSDValueOfUserByType(firstUser, 2);
+
+        bool userBorrowValueRepaid = userTotalBorrowValue == 0 || userTotalBorrowValue < 10;
+        assertTrue(userBorrowValueRepaid, "Loan repayment not within range");
+        vm.stopPrank();
+        ccipLocalSimulatorFork.switchChainAndRouteMessage(sourceFork);
+
+        vm.selectFork(sourceFork);
+        userTotalBorrowValue = crossCreditOnSource.getTotalUSDValueOfUserByType(firstUser, 2);
+        userBorrowValueRepaid = userTotalBorrowValue == 0 || userTotalBorrowValue < 10;
+        assertTrue(userBorrowValueRepaid, "Loan repayment not within range");
+    }
 }
