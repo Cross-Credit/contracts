@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
 library Error {
@@ -23,4 +23,6 @@ library Error {
     error FallbackUnsupported();
     error InvalidPositionType();
     error InvalidAssetDecimals();
+    error NoCollateralFoundForAsset();
+    error InvalidAssetPrice();
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
 import {Test} from "forge-std/Test.sol";
@@ -7,8 +7,8 @@ import {CrossCredit} from "../src/CrossCredit.sol";
 import {AggregatorV3InterfaceMock} from "./mocks/AggregatorV3InterfaceMock.sol";
 import {CustomERC20} from "./mocks/CustomERC20.sol";
 import {CCIPLocalSimulatorFork, Register} from "@chainlink/local/src/ccip/CCIPLocalSimulatorFork.sol";
-import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol"; // Use direct interface for clarity
-import {WETH9} from "@chainlink/local/src/shared/WETH9.sol"; // May not be needed if not using WETH for fees
+import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
+import {WETH9} from "@chainlink/local/src/shared/WETH9.sol";
 
 contract Base is Test {
     CCIPLocalSimulatorFork public ccipLocalSimulatorFork;
@@ -28,8 +28,8 @@ contract Base is Test {
     CustomERC20 public sourceUSDC;
     CustomERC20 public destUSDC;
 
-    uint64 public SOURCE_CHAIN_SELECTOR; // Renamed for consistency with CCIP
-    uint64 public DEST_CHAIN_SELECTOR; // Renamed for consistency with CCIP
+    uint64 public SOURCE_CHAIN_SELECTOR;
+    uint64 public DEST_CHAIN_SELECTOR;
 
     address public admin = makeAddr("admin");
     address public firstUser = makeAddr("firstUser");

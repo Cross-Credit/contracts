@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
 library CrossCreditLibrary {
@@ -12,6 +12,7 @@ library CrossCreditLibrary {
         address asset;
         uint256 amount;
         address liquidator;
+        address debtAsset;
     }
 
     struct BorrowPosition {
