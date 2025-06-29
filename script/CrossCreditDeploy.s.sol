@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import {Script} from "forge-std/Script.sol";
 import {CrossCredit} from "../src/CrossCredit.sol";
+import {ICrossCredit} from "../src/interfaces/ICrossCredit.sol";
 
 contract CrossCreditDeploy is Script {
     address public constant AVALANCHE_FUJI_ROUTER = 0xF694E193200268f9a4868e4Aa017A0118C9a8177;
@@ -71,7 +72,7 @@ contract CrossCreditDeploy is Script {
 
 //        vm.createSelectFork(vm.rpcUrl(ETHEREUM_SEPOLIA_RPC_URL));
 //        vm.startBroadcast();
-//        crossCreditOnETHSepolia.setReceiverOnConnectedChain(address(crossCreditOnAvalancheFuji));
+////        crossCreditOnETHSepolia.setReceiverOnConnectedChain(address(crossCreditOnAvalancheFuji));
 //        vm.stopBroadcast();
     }
 }

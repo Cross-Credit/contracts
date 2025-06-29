@@ -26,9 +26,17 @@ interface ICrossCredit {
 
     function unlend(uint256 _amount, address _asset) external;
 
-    function liquidate(uint256 _amount, address _debtAsset, address _borrower, address _collateralToSeize) external payable;
+    function liquidate(uint256 _amount, address _assetPaidByLiquidator, address _borrower) external payable;
 
     function getUserPositionForAssetByTypeOnSource(address _asset, address _user, uint8 _positionType) external view returns (uint256);
 
     function getUserPositionForAssetByTypeOnDest(address _asset, address _user, uint8 _positionType) external view returns (uint256);
+
+    function setReceiverOnConnectedChain(address _receiver) external;
+
+    function setConnectedChainID(uint64 _chainID) external;
+
+    function setAssetToAssetOnConnectedChain(address _asset, address _connectedChainAsset, uint8 _assetDecimalsOnConnected) external;
+
+    function setPriceFeed(address _asset, address _feed) external;
 }

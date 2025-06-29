@@ -2,6 +2,8 @@
 pragma solidity ^0.8.13;
 
 import {Base} from "./Base.t.sol";
+import {console} from "forge-std/console.sol";
+
 
 contract CrossCreditLiquidation is Base {
     function test_lendBorrowLiquidate() public {
@@ -62,24 +64,31 @@ contract CrossCreditLiquidation is Base {
         vm.deal(secondUser, amountToBorrowRaw);
         uint userBalBeforeLIQ = secondUser.balance;
         vm.startPrank(secondUser);
-        crossCreditOnDest.liquidate{value: amountToBorrowRaw}(amountToBorrowRaw, NATIVE_ASSET, firstUser, address(destUSDC));
+        crossCreditOnDest.liquidate{value: amountToBorrowRaw}(amountToBorrowRaw, NATIVE_ASSET, firstUser);
         vm.stopPrank();
-
-        ccipLocalSimulatorFork.switchChainAndRouteMessage(sourceFork);
-        vm.selectFork(sourceFork);
-        vm.selectFork(destinationFork);
 
         assertEq(secondUser.balance, userBalBeforeLIQ - amountToBorrowRaw, "User balance mismatch");
 
         uint256 finalUserLendValue = crossCreditOnDest.getTotalUSDValueOfUserByType(firstUser, 1);
         uint256 finalUserBorrowValue = crossCreditOnDest.getTotalUSDValueOfUserByType(firstUser, 2);
 
-        assertEq(finalUserLendValue, 0, "User's lend position should be zero after full liquidation");
-        assertEq(finalUserBorrowValue, 0, "User's borrow position should be zero after full liquidation");
+        assertEq(finalUserLendValue, 0, "User's lend position on dest should be zero after full liquidation");
+        assertEq(finalUserBorrowValue, 0, "User's borrow position on dest should be zero after full liquidation");
 
+        ccipLocalSimulatorFork.switchChainAndRouteMessage(sourceFork);
         vm.selectFork(sourceFork);
+
         uint liquidatorBalOfCollateralAfter = sourceUSDC.balanceOf(secondUser);
         uint debtorCollateralPositionAfter = crossCreditOnSource.getUserPositionForAssetByType(address(sourceUSDC), firstUser, 1);
+
+        finalUserLendValue = crossCreditOnSource.getTotalUSDValueOfUserByType(firstUser, 1);
+        finalUserBorrowValue = crossCreditOnSource.getTotalUSDValueOfUserByType(firstUser, 2);
+
+        uint userUSDCPositionSource = crossCreditOnSource.getUserPositionForAssetByType(address(sourceUSDC), firstUser, 1);
+        console.log("userUSDCPositionSource", userUSDCPositionSource);
+
+        assertEq(finalUserLendValue, 0, "User's lend position on source should be zero after full liquidation");
+        assertEq(finalUserBorrowValue, 0, "User's borrow position on source should be zero after full liquidation");
 
         assertEq(debtorCollateralPositionAfter, 0, "Debtor collateral position not closed");
         assertEq(liquidatorBalOfCollateralAfter, liquidatorBalOfCollateralBefore + debtorCollateralPositionBefore, "Liquidator collateral balance not increasde");

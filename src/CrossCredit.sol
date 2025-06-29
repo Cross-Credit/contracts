@@ -20,25 +20,25 @@ contract CrossCredit is Ownable, ReentrancyGuard, CCIPReceiver, ICrossCredit {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     EnumerableSet.AddressSet private s_whitelistedAssets;
-    mapping(address => uint8) private s_assetDecimals;
+    mapping(address => uint8) public s_assetDecimals;
     mapping(address => mapping(address => CrossCreditLibrary.LendPosition)) internal s_userLendPosition;
     mapping(address => mapping(address => CrossCreditLibrary.BorrowPosition)) internal s_userBorrowPosition;
 
-    mapping(address => address) internal s_assetToAssetOnConnectedChain;
-    mapping(address => uint8) private s_assetDecimalsOnConnectedChain;
+    mapping(address => address) public s_assetToAssetOnConnectedChain;
+    mapping(address => uint8) public s_assetDecimalsOnConnectedChain;
 
     mapping(address => AggregatorV3Interface) private s_assetFeed;
 
     bool public s_isConnectedChainSet;
-    address private s_receiverOnConnectedChain;
+    address public s_receiverOnConnectedChain;
     uint64 public s_connectedChainID;
     uint64 public immutable i_sourceChainID;
-    address private immutable i_nativeAssetAddress;
+    address public immutable i_nativeAssetAddress;
 
     mapping(address => mapping(address => CrossCreditLibrary.LendPosition)) internal s_userLendPositionOnConnectedChain;
     mapping(address => mapping(address => CrossCreditLibrary.BorrowPosition)) internal s_userBorrowPositionOnConnectedChain;
 
-    IRouterClient private s_router;
+    IRouterClient public s_router;
 //    LinkTokenInterface private s_linkToken;
 
     uint8 private constant LEND_POSITION = 1;
@@ -221,14 +221,12 @@ contract CrossCredit is Ownable, ReentrancyGuard, CCIPReceiver, ICrossCredit {
         }
     }
 
-    function liquidate(uint256 _amount, address _debtAsset, address _borrower, address _collateralToSeize)
+    function liquidate(uint256 _amount, address _assetPaidByLiquidator, address _borrower)
     public
     payable nonReentrant
-    onlyWhitelistedAsset(_debtAsset)
-    onlyWhitelistedAsset(_collateralToSeize)
-    validAddress(_debtAsset)
+    onlyWhitelistedAsset(_assetPaidByLiquidator)
+    validAddress(_assetPaidByLiquidator)
     validAddress(_borrower)
-    validAddress(_collateralToSeize)
     {
         if (_amount == 0) revert Error.NoZeroAmount();
 
@@ -236,101 +234,40 @@ contract CrossCredit is Ownable, ReentrancyGuard, CCIPReceiver, ICrossCredit {
         uint256 userTotalLendUSDValue = getTotalUSDValueOfUserByType(_borrower, 1);
         uint256 userTotalBorrowUSDValue = getTotalUSDValueOfUserByType(_borrower, 2);
 
-        uint256 debtAssetDecimals = s_assetDecimals[_debtAsset];
-        (int256 debtPrice,) = _getAssetPriceData(_debtAsset);
+        uint256 debtAssetDecimals = s_assetDecimals[_assetPaidByLiquidator];
+        (int256 debtPrice,) = _getAssetPriceData(_assetPaidByLiquidator);
         uint256 currentRepayAmountUSD = (_amount * uint256(debtPrice)) / (10 ** debtAssetDecimals);
 
         if (userTotalBorrowUSDValue < ((LIQ * userTotalLendUSDValue) / 100)) revert Error.UserNotLiquidateable();
 
-        _validateRepaymentAmount(
-            _borrower,
-            _debtAsset,
-            currentRepayAmountUSD,
-            debtPrice,
-            debtAssetDecimals
-        );
-
-        _handleLiquidatorPayment(_amount, _debtAsset, msg.sender);
-
-        _processCollateralLiquidationAndReset(_borrower, _collateralToSeize, _debtAsset, msg.sender);
-
-        _handleRefund(
-            _amount, _debtAsset, msg.sender,
-            currentRepayAmountUSD, userTotalBorrowUSDValue
-        );
-    }
-
-    function _validateRepaymentAmount(
-        address _borrower,
-        address _debtAsset,
-        uint256 _currentRepayAmountUSD,
-        int256 _debtPrice,
-        uint256 _debtAssetDecimals
-    ) internal view {
-        uint256 borrowerSpecificDebtAssetTotalUSD = 0;
-
-        if (_debtPrice <= 0) {
-            revert Error.InvalidAssetPrice();
-        }
-
-        // 1. Calculate USD value for debt on the LOCAL chain
-        uint256 borrowerSpecificDebtAssetAmountLocal = s_userBorrowPosition[_borrower][_debtAsset].amount;
-        if (borrowerSpecificDebtAssetAmountLocal > 0) {
-            borrowerSpecificDebtAssetTotalUSD += (borrowerSpecificDebtAssetAmountLocal * uint256(_debtPrice)) / (10 ** _debtAssetDecimals);
-        }
-
-        // 2. Calculate USD value for debt on the CONNECTED chain
-        uint256 borrowerSpecificDebtAssetAmountConnected = s_userBorrowPositionOnConnectedChain[_borrower][_debtAsset].amount;
-        if (borrowerSpecificDebtAssetAmountConnected > 0) {
-            // Get the asset address on the connected chain
-            address debtAssetOnConnectedChain = s_assetToAssetOnConnectedChain[_debtAsset];
-            // Get the decimals for THIS asset on the CONNECTED chain
-            uint256 debtAssetDecimalsOnConnected = s_assetDecimalsOnConnectedChain[debtAssetOnConnectedChain];
-
-            if (debtAssetDecimalsOnConnected == 0) revert Error.InvalidAssetPrice();
-
-            borrowerSpecificDebtAssetTotalUSD += (borrowerSpecificDebtAssetAmountConnected * uint256(_debtPrice)) / (10 ** debtAssetDecimalsOnConnected);
-        }
-
-        if (_currentRepayAmountUSD < borrowerSpecificDebtAssetTotalUSD) {
+        if (currentRepayAmountUSD < userTotalBorrowUSDValue) {
             revert Error.InsufficientRepayAmount();
         }
+
+        _handleLiquidatorPayment(_amount, _assetPaidByLiquidator, msg.sender);
+
+        _handleRefund(
+            _amount, _assetPaidByLiquidator, msg.sender,
+            currentRepayAmountUSD, userTotalBorrowUSDValue
+        );
+
+        _processCollateralLiquidationAndReset(_borrower, _assetPaidByLiquidator, msg.sender);
     }
+
 
     function _processCollateralLiquidationAndReset(
         address _borrower,
-        address _collateralToSeize,
-        address _debtAsset,
+        address _assetPaidByLiquidator,
         address _liquidator
     ) internal {
-        uint256 userLendAmountOfCollateralOnSource = s_userLendPosition[_borrower][_collateralToSeize].amount;
-        uint256 userLendAmountOfCollateralOnConnected = s_userLendPositionOnConnectedChain[_borrower][_collateralToSeize].amount;
-
-        if (userLendAmountOfCollateralOnSource == 0 && userLendAmountOfCollateralOnConnected == 0) {
-            revert Error.NoCollateralFoundForAsset();
-        }
-
-        if (userLendAmountOfCollateralOnSource > 0) {
-            if (_collateralToSeize != i_nativeAssetAddress) {
-                IERC20(_collateralToSeize).safeTransfer(_liquidator, userLendAmountOfCollateralOnSource);
-            } else {
-                (bool success,) = payable(_liquidator).call{value: userLendAmountOfCollateralOnSource}("");
-                if (!success) revert Error.TransferFailed();
-            }
-        }
+        _processCCIPLiquidation(_borrower, _liquidator);
 
         _sendLiquidationCCIPMessage(
-            _collateralToSeize,
-            _debtAsset,
+            s_assetToAssetOnConnectedChain[_assetPaidByLiquidator],
+            s_assetToAssetOnConnectedChain[_assetPaidByLiquidator],
             _borrower,
             _liquidator
         );
-
-        s_userLendPosition[_borrower][_collateralToSeize].amount = 0;
-        s_userBorrowPosition[_borrower][_debtAsset].amount = 0;
-
-        s_userLendPositionOnConnectedChain[_borrower][_collateralToSeize].amount = 0;
-        s_userBorrowPositionOnConnectedChain[_borrower][_debtAsset].amount = 0;
     }
 
     function _sendLiquidationCCIPMessage(
@@ -401,7 +338,6 @@ contract CrossCredit is Ownable, ReentrancyGuard, CCIPReceiver, ICrossCredit {
                 userAmountOnSourceRaw = s_userBorrowPosition[_user][_asset].amount;
                 userAmountOnConnectedRaw = s_userBorrowPositionOnConnectedChain[_user][_asset].amount;
             } else {
-                // Handle invalid position type, e.g., revert or skip
                 continue;
             }
 
@@ -538,21 +474,9 @@ contract CrossCredit is Ownable, ReentrancyGuard, CCIPReceiver, ICrossCredit {
         } else if (positionType == BORROW_POSITION) {
             s_userBorrowPositionOnConnectedChain[position.caller][position.asset].amount = position.amount;
         } else if (positionType == LIQUIDATE_POSITION) {
-            uint amountLentByUser = s_userLendPosition[position.caller][position.asset].amount;
-            s_userLendPosition[position.caller][position.asset].amount = 0;
-            // s_userLendPositionOnConnectedChain[position.caller][position.asset].amount = 0;
-
-            s_userBorrowPosition[position.caller][position.debtAsset].amount = 0;
-            // s_userBorrowPositionOnConnectedChain[position.caller][position.debtAsset].amount = 0;
-
-            if (amountLentByUser > 0) {
-                if (position.asset != i_nativeAssetAddress) {
-                    IERC20(position.asset).safeTransfer(position.liquidator, amountLentByUser);
-                } else {
-                    (bool success,) = payable(position.liquidator).call{value: amountLentByUser}("");
-                    if (!success) revert Error.TransferFailed();
-                }
-            }
+            _processCCIPLiquidation(position.caller, position.liquidator);
+        } else {
+            revert Error.InvalidPositionType();
         }
 
         latestMessageId = any2EvmMessage.messageId;
@@ -566,6 +490,37 @@ contract CrossCredit is Ownable, ReentrancyGuard, CCIPReceiver, ICrossCredit {
             abi.decode(any2EvmMessage.sender, (address)),
             positionType
         );
+    }
+
+    function _processCCIPLiquidation(address _borrower, address _liquidator) internal {
+        address[] memory _whitelistedAssets = s_whitelistedAssets.values();
+
+        for (uint i = 0; i < _whitelistedAssets.length; i++) {
+            address _collateralToSeize = _whitelistedAssets[i];
+            uint256 userLendAmountOfCollateralOnSource = s_userLendPosition[_borrower][_collateralToSeize].amount;
+
+            if (userLendAmountOfCollateralOnSource == 0) {
+                continue;
+            }
+
+            if (_collateralToSeize != i_nativeAssetAddress) {
+                IERC20(_collateralToSeize).safeTransfer(_liquidator, userLendAmountOfCollateralOnSource);
+            } else {
+                (bool success,) = payable(_liquidator).call{value: userLendAmountOfCollateralOnSource}("");
+                if (!success) revert Error.TransferFailed();
+            }
+
+        }
+
+        for (uint i = 0; i < _whitelistedAssets.length; i++) {
+            address _collateralToSeize = _whitelistedAssets[i];
+
+            s_userLendPosition[_borrower][_collateralToSeize].amount = 0;
+            s_userBorrowPosition[_borrower][_collateralToSeize].amount = 0;
+
+            s_userLendPositionOnConnectedChain[_borrower][_collateralToSeize].amount = 0;
+            s_userBorrowPositionOnConnectedChain[_borrower][_collateralToSeize].amount = 0;
+        }
     }
 
     function getLatestMessageDetails()

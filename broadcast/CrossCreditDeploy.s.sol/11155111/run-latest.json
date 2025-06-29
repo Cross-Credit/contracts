@@ -1,0 +1,49 @@
+{
+  "transactions": [
+    {
+      "hash": "0x84713d20805d7b744c99ac9bc30c341040f612610a7767e2ade1adceb9de7268",
+      "transactionType": "CALL",
+      "contractName": null,
+      "contractAddress": "0xf91a70a47b87f4196f21ce62e35a96bb994ffa3e",
+      "function": "setReceiverOnConnectedChain(address)",
+      "arguments": [
+        "0x146A6aeA830316aC0D7C69BcbE24Cd3dfeE2d45e"
+      ],
+      "transaction": {
+        "from": "0xf30d8a3dc67f7c3934bbbfacd4f23dfcca1b9d28",
+        "to": "0xf91a70a47b87f4196f21ce62e35a96bb994ffa3e",
+        "gas": "0x9d1e",
+        "value": "0x0",
+        "input": "0x88264ace000000000000000000000000146a6aea830316ac0d7c69bcbe24cd3dfee2d45e",
+        "nonce": "0x10",
+        "chainId": "0xaa36a7"
+      },
+      "additionalContracts": [],
+      "isFixedGasLimit": false
+    }
+  ],
+  "receipts": [
+    {
+      "status": "0x1",
+      "cumulativeGasUsed": "0x1404943",
+      "logs": [],
+      "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "type": "0x2",
+      "transactionHash": "0x84713d20805d7b744c99ac9bc30c341040f612610a7767e2ade1adceb9de7268",
+      "transactionIndex": "0x9e",
+      "blockHash": "0x4be019901e8062e03412b8c37f5967bb5943426f6fb5eee396d483a549f56cb2",
+      "blockNumber": "0x840e16",
+      "gasUsed": "0x71c0",
+      "effectiveGasPrice": "0x1a9e8e",
+      "from": "0xf30d8a3dc67f7c3934bbbfacd4f23dfcca1b9d28",
+      "to": "0xf91a70a47b87f4196f21ce62e35a96bb994ffa3e",
+      "contractAddress": null
+    }
+  ],
+  "libraries": [],
+  "pending": [],
+  "returns": {},
+  "timestamp": 1751197561,
+  "chain": 11155111,
+  "commit": "4db0ecc"
+}
