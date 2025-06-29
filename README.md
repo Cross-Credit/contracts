@@ -5,9 +5,9 @@ operations across multiple blockchain networks. Built on Chainlink's Cross-Chain
 platform allows users to deposit collateral on one blockchain and borrow assets on another, creating a unified
 cross-chain DeFi experience.
 
-**[CrossCredit on Ethereum Sepolia](https://sepolia.etherscan.io/address/0xf91a70a47b87f4196f21ce62e35a96bb994ffa3e)**
+**[CrossCredit on Ethereum Sepolia](https://eth-sepolia.blockscout.com/address/0x883B1acd783a66b543b1d4Ee965372B8EaA2d430?tab=read_write_contract)**
 
-**[CrossCredit on Avalanche Fuji](https://testnet.snowscan.xyz/address/0x146a6aea830316ac0d7c69bcbe24cd3dfee2d45e)**
+**[CrossCredit on Avalanche Fuji](https://testnet.snowtrace.io/address/0xEA084C9e33B3aC71bCC4788A549B2905f26BfFb2/contract/43113/writeContract?chainid=43113)**
 
 ## Project Architecture & Technology Stack 🏗️
 
